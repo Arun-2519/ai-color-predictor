@@ -2,12 +2,14 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import random
-from collections import defaultdict
+from collections import defaultdict, Counter
 from io import BytesIO
+import os
+import pickle
 from sklearn.naive_bayes import MultinomialNB
 
-# --- UI Setup ---
-st.set_page_config(page_title="🎨 Color Predictor AI", layout="centered")
+# --- Config ---
+st.set_page_config(page_title="🎨 AI Color Predictor", layout="centered")
 st.title("🧠 AI Color Predictor (Red / Black / Joker)")
 
 st.markdown("""
@@ -23,18 +25,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Session Init ---
-for key, default in {
-    "authenticated": False,
-    "username": "",
-    "user_inputs": [],
-    "X_train": [],
-    "y_train": [],
-    "prediction_log": [],
-    "loss_streak": 0,
-    "transition_model": defaultdict(lambda: defaultdict(int))
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+def init_session():
+    for key, default in {
+        "authenticated": False,
+        "username": "",
+        "user_inputs": [],
+        "X_train": [],
+        "y_train": [],
+        "prediction_log": [],
+        "loss_streak": 0,
+        "transition_model": defaultdict(lambda: defaultdict(int))
+    }.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
+init_session()
+
+# --- Paths ---
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # --- Login ---
 def login(user, pwd): return pwd == "1234"
@@ -46,10 +54,25 @@ if not st.session_state.authenticated:
         if login(u, p):
             st.session_state.authenticated = True
             st.session_state.username = u
-            st.success("✅ Logged in")
+
+            # Load training
+            TRAIN_PATH = os.path.join(DATA_DIR, f"{u}_training.pkl")
+            if os.path.exists(TRAIN_PATH):
+                with open(TRAIN_PATH, "rb") as f:
+                    saved = pickle.load(f)
+                    st.session_state.X_train = saved.get("X_train", [])
+                    st.session_state.y_train = saved.get("y_train", [])
+                    st.success("📤 Training data restored.")
+
+            # Load logs
+            LOG_PATH = os.path.join(DATA_DIR, f"{u}_log.csv")
+            if os.path.exists(LOG_PATH):
+                df = pd.read_csv(LOG_PATH)
+                st.session_state.prediction_log = df.to_dict(orient="records")
         else:
             st.error("❌ Invalid login")
     st.stop()
+
 if st.button("Logout"):
     st.session_state.authenticated = False
     st.session_state.username = ""
@@ -71,7 +94,7 @@ if st.button("➕ Add Result"):
     st.session_state.user_inputs.append(choice)
     st.success(f"Added: {choice}")
 
-# --- Continuous Learning ---
+# --- Continuous Learning from past ---
 if len(st.session_state.user_inputs) > 8:
     for i in range(8, len(st.session_state.user_inputs)):
         past = st.session_state.user_inputs[i-8:i]
@@ -83,13 +106,10 @@ if len(st.session_state.user_inputs) > 8:
 
 # --- Prediction Logic ---
 def predict_color(seq):
-    if len(seq) < 8:
+    if len(seq) < 8 or len(st.session_state.X_train) < 20:
         return adaptive_fallback(seq)
 
     encoded = encode(seq[-8:])
-    if len(st.session_state.X_train) < 20:
-        return adaptive_fallback(seq)
-
     clf = MultinomialNB()
     weights = np.exp(np.linspace(0, 1, len(st.session_state.X_train)))
     clf.fit(st.session_state.X_train, st.session_state.y_train, sample_weight=weights)
@@ -105,7 +125,7 @@ def adaptive_fallback(seq):
     best = max(counts, key=counts.get)
     return best, 55
 
-# --- Learning Logic ---
+# --- Learn Function ---
 def learn(seq, actual):
     if len(seq) >= 8:
         encoded = encode(seq[-8:])
@@ -117,18 +137,33 @@ def learn(seq, actual):
             key = tuple(seq[-l:])
             st.session_state.transition_model[key][actual] += 1
 
-# --- Prediction Section ---
+# --- Match Streak ---
+def match_streak_probability(seq):
+    streak_key = tuple(seq[-8:])
+    if streak_key in st.session_state.transition_model:
+        data = st.session_state.transition_model[streak_key]
+        total = sum(data.values())
+        probs = {k: round((v / total) * 100, 1) for k, v in data.items()}
+        return probs
+    return {}
+
+# --- Prediction ---
 if len(st.session_state.user_inputs) >= 10:
     pred, conf = predict_color(st.session_state.user_inputs)
-
     st.subheader("📈 AI Prediction")
 
     if st.session_state.loss_streak >= 3:
-        st.warning("⚠️ 3+ wrong predictions in a row. Wait for better pattern!")
+        st.warning("⚠️ Multiple wrong predictions! Be cautious.")
         st.audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg", autoplay=True)
 
+    streak_probs = match_streak_probability(st.session_state.user_inputs)
+    if streak_probs:
+        st.info(f"🧬 Matched Past Pattern ➡️ Probabilities: {streak_probs}")
+    else:
+        st.caption("🌀 No exact match found in learned patterns.")
+
     if conf < 65:
-        st.warning("⛔ Low confidence or limited data. Wait...")
+        st.warning("⛔ Low confidence. Wait for better pattern.")
         st.audio("https://actions.google.com/sounds/v1/alarms/warning.ogg", autoplay=True)
     else:
         st.success(f"Predicted: **{pred}** | Confidence: `{conf}%`")
@@ -146,28 +181,40 @@ if len(st.session_state.user_inputs) >= 10:
             learn(st.session_state.user_inputs, actual)
             st.session_state.user_inputs.append(actual)
             st.session_state.loss_streak = 0 if correct else st.session_state.loss_streak + 1
-            st.success("✅ Learned and model updated.")
+
+            # Save training
+            TRAIN_PATH = os.path.join(DATA_DIR, f"{st.session_state.username}_training.pkl")
+            with open(TRAIN_PATH, "wb") as f:
+                pickle.dump({
+                    "X_train": st.session_state.X_train,
+                    "y_train": st.session_state.y_train
+                }, f)
+
+            # Save logs
+            LOG_PATH = os.path.join(DATA_DIR, f"{st.session_state.username}_log.csv")
+            pd.DataFrame(st.session_state.prediction_log).to_csv(LOG_PATH, index=False)
+
+            st.success("✅ Learned and updated model.")
             st.rerun()
 else:
     st.info(f"Enter {10 - len(st.session_state.user_inputs)} more results to enable prediction.")
 
-# --- Training Stats ---
+# --- Stats & Export ---
 if st.session_state.y_train:
     label_counts = pd.Series([decode(y) for y in st.session_state.y_train]).value_counts().to_dict()
     st.caption(f"📊 Training Distribution: {label_counts}")
 
-# --- History + Export ---
 if st.session_state.prediction_log:
     st.subheader("📊 Prediction History")
     df = pd.DataFrame(st.session_state.prediction_log)
     st.dataframe(df, use_container_width=True)
 
     if st.button("📥 Generate Excel"):
-        buf = BytesIO()
-        df.to_excel(buf, index=False)
-        st.download_button("⬇️ Download Excel", data=buf.getvalue(),
-                           file_name=f"{st.session_state.username}_color_prediction_history.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        buffer = BytesIO()
+        df.to_excel(buffer, index=False)
+        st.download_button("⬇️ Download Excel", data=buffer.getvalue(),
+            file_name=f"{st.session_state.username}_prediction_history.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.markdown("---")
-st.caption("🔮 AI-Powered Color Prediction App | Naive Bayes + Confidence Alerts | Built with ❤️ by Vendra")
+st.caption("Built with ❤️ | Continuous Learning Enabled | Naive Bayes + Pattern + Streak Alert")
