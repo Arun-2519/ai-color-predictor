@@ -1,41 +1,46 @@
 
-# --- imports ---
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
-import pickle
 from collections import defaultdict, Counter
 from io import BytesIO
+import os
+import pickle
 from sklearn.naive_bayes import MultinomialNB
 
-# --- UI Config ---
+# --- UI Setup ---
 st.set_page_config(page_title="🎨 AI Color Predictor", layout="centered")
 st.title("🧠 AI Color Predictor (Red / Black / Joker)")
+
 st.markdown("""
-    <style>
-        body { background-color: #0f1117; color: white; }
-        .stButton>button {
-            background-color: #6a1b9a;
-            color: white;
-            font-weight: bold;
-            border-radius: 6px;
-        }
-    </style>
+<style>
+    body { background-color: #0f1117; color: white; }
+    .stButton>button {
+        background-color: #6a1b9a;
+        color: white;
+        font-weight: bold;
+        border-radius: 6px;
+    }
+</style>
 """, unsafe_allow_html=True)
 
-# --- Session Init ---
+# --- Session Setup ---
 def init_session():
-    for key, val in {
-        "authenticated": False, "username": "", "user_inputs": [],
-        "X_train": [], "y_train": [], "prediction_log": [],
-        "loss_streak": 0, "transition_model": defaultdict(lambda: defaultdict(int))
+    for key, default in {
+        "authenticated": False,
+        "username": "",
+        "user_inputs": [],
+        "X_train": [],
+        "y_train": [],
+        "prediction_log": [],
+        "loss_streak": 0,
+        "transition_model": defaultdict(lambda: defaultdict(int))
     }.items():
         if key not in st.session_state:
-            st.session_state[key] = val
+            st.session_state[key] = default
 init_session()
 
-# --- File Paths ---
+# --- Data Directory ---
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -49,13 +54,12 @@ if not st.session_state.authenticated:
         if login(u, p):
             st.session_state.authenticated = True
             st.session_state.username = u
-
             TRAIN_PATH = os.path.join(DATA_DIR, f"{u}_training.pkl")
             if os.path.exists(TRAIN_PATH):
                 with open(TRAIN_PATH, "rb") as f:
-                    d = pickle.load(f)
-                    st.session_state.X_train = d.get("X_train", [])
-                    st.session_state.y_train = d.get("y_train", [])
+                    saved = pickle.load(f)
+                    st.session_state.X_train = saved.get("X_train", [])
+                    st.session_state.y_train = saved.get("y_train", [])
             LOG_PATH = os.path.join(DATA_DIR, f"{u}_log.csv")
             if os.path.exists(LOG_PATH):
                 df = pd.read_csv(LOG_PATH)
@@ -66,20 +70,26 @@ if not st.session_state.authenticated:
 
 if st.button("Logout"):
     st.session_state.authenticated = False
+    st.session_state.username = ""
     st.rerun()
 
-# --- Encoders ---
-def encode(seq): return [ {"Red": 0, "Black": 1, "Joker": 2}[s] for s in seq if s in {"Red", "Black", "Joker"} ]
-def decode(val): return {0: "Red", 1: "Black", 2: "Joker"}.get(val, "")
+# --- Encoding ---
+def encode(seq):
+    m = {"Red": 0, "Black": 1, "Joker": 2}
+    return [m.get(s, 0) for s in seq]
 
-# --- Input ---
-st.subheader("🎮 Add Game Result (Red / Black / Joker)")
+def decode(val):
+    m = {0: "Red", 1: "Black", 2: "Joker"}
+    return m.get(val, "")
+
+# --- Input Section ---
+st.subheader("🎮 Add Game Result")
 choice = st.selectbox("Latest Result", ["Red", "Black", "Joker"])
 if st.button("➕ Add Result"):
     st.session_state.user_inputs.append(choice)
     st.success(f"Added: {choice}")
 
-# --- Learn from User Inputs ---
+# --- Learning From Input History ---
 if len(st.session_state.user_inputs) > 8:
     for i in range(8, len(st.session_state.user_inputs)):
         past = st.session_state.user_inputs[i - 8:i]
@@ -92,6 +102,17 @@ if len(st.session_state.user_inputs) > 8:
                 st.session_state.X_train = st.session_state.X_train[-3000:]
                 st.session_state.y_train = st.session_state.y_train[-3000:]
 
+# --- Learning Function ---
+def learn(seq, actual):
+    if len(seq) >= 8:
+        encoded = encode(seq[-8:])
+        label = encode([actual])[0]
+        st.session_state.X_train.append(encoded)
+        st.session_state.y_train.append(label)
+    for l in range(8, 3, -1):
+        key = tuple(seq[-l:])
+        st.session_state.transition_model[key][actual] += 1
+
 # --- Pattern Matching ---
 def match_partial_pattern(seq):
     for l in range(8, 3, -1):
@@ -99,13 +120,14 @@ def match_partial_pattern(seq):
         matches = {k: v for k, v in st.session_state.transition_model.items() if k[-l:] == current}
         if matches:
             counter = Counter()
-            for v in matches.values(): counter.update(v)
+            for v in matches.values():
+                counter.update(v)
             total = sum(counter.values())
             if total > 0:
                 return {k: round((v / total) * 100, 1) for k, v in counter.items()}
     return {}
 
-# --- Trend fallback (recent 10) ---
+# --- Fallback: Trend of Last 10 ---
 def recent_trend_prediction(seq):
     reds = seq[-10:].count("Red")
     blacks = seq[-10:].count("Black")
@@ -114,19 +136,10 @@ def recent_trend_prediction(seq):
     top = max(counts, key=counts.get)
     return top, 55
 
-# --- Learn Function ---
-def learn(seq, actual):
-    if len(seq) >= 8:
-        st.session_state.X_train.append(encode(seq[-8:]))
-        st.session_state.y_train.append(encode([actual])[0])
-    for l in range(8, 3, -1):
-        key = tuple(seq[-l:])
-        st.session_state.transition_model[key][actual] += 1
-
-# --- Prediction ---
+# --- Prediction Core ---
 def predict_color(seq):
     if len(seq) < 10:
-        return "Waiting", 0
+        return "Learning", 0
 
     pattern_probs = match_partial_pattern(seq)
     if pattern_probs:
@@ -134,7 +147,7 @@ def predict_color(seq):
         return top, pattern_probs[top]
 
     top10, conf10 = recent_trend_prediction(seq)
-    if top10:
+    if conf10 > 55:
         return top10, conf10
 
     if len(st.session_state.X_train) >= 20:
@@ -150,22 +163,20 @@ def predict_color(seq):
 
     return "Learning", 0
 
-# --- Prediction UI ---
+# --- Prediction & Feedback UI ---
 if len(st.session_state.user_inputs) >= 10:
     pred, conf = predict_color(st.session_state.user_inputs)
     st.subheader("📈 AI Prediction")
 
     if st.session_state.loss_streak >= 3:
-        st.warning("🚨 3+ Wrong predictions. Take caution.")
+        st.warning("⚠️ 3+ wrong predictions in a row.")
         st.audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg", autoplay=True)
 
-    if conf == 0:
-        st.info("🌀 Still learning... Enter more inputs.")
-    elif conf < 60:
+    if conf < 60:
         st.warning(f"⛔ Low confidence: **{pred}** ({conf}%)")
         st.audio("https://actions.google.com/sounds/v1/alarms/warning.ogg", autoplay=True)
     else:
-        st.success(f"🎯 Predicted: **{pred}** | Confidence: `{conf}%`")
+        st.success(f"✅ Predicted: **{pred}** | Confidence: `{conf}%`")
         st.audio("https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg", autoplay=True)
 
         actual = st.selectbox("Enter Actual Result:", ["Red", "Black", "Joker"], key="actual_feedback")
@@ -178,7 +189,6 @@ if len(st.session_state.user_inputs) >= 10:
             learn(st.session_state.user_inputs, actual)
             st.session_state.user_inputs.append(actual)
             st.session_state.loss_streak = 0 if correct else st.session_state.loss_streak + 1
-
             pickle.dump(
                 {"X_train": st.session_state.X_train, "y_train": st.session_state.y_train},
                 open(os.path.join(DATA_DIR, f"{st.session_state.username}_training.pkl"), "wb")
@@ -189,22 +199,22 @@ if len(st.session_state.user_inputs) >= 10:
             st.success("✅ Learned and updated.")
             st.rerun()
 else:
-    st.info("🔁 Enter at least 10 rounds to enable prediction.")
+    st.info(f"🔁 Enter {10 - len(st.session_state.user_inputs)} more results to begin prediction.")
 
 if st.session_state.y_train:
-    counts = pd.Series([decode(y) for y in st.session_state.y_train]).value_counts().to_dict()
-    st.caption(f"📊 Training Data Breakdown: {counts}")
+    label_counts = pd.Series([decode(y) for y in st.session_state.y_train]).value_counts().to_dict()
+    st.caption(f"📊 Training Summary: {label_counts}")
 
 if st.session_state.prediction_log:
     st.subheader("📊 Prediction History")
     df = pd.DataFrame(st.session_state.prediction_log)
     st.dataframe(df, use_container_width=True)
-
     if st.button("📥 Export Excel"):
         buffer = BytesIO()
         df.to_excel(buffer, index=False)
-        st.download_button("⬇️ Download", data=buffer.getvalue(),
-            file_name=f"{st.session_state.username}_history.xlsx",
+        st.download_button("⬇️ Download Excel", data=buffer.getvalue(),
+            file_name=f"{st.session_state.username}_prediction_log.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("🔁 Real-time Pattern & Streak Learning | 🔊 Sound Enabled")
+st.markdown("---")
+st.caption("Built with ❤️ | Adaptive + Pattern Learning | Sound Alerts")
