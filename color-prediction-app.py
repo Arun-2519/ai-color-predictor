@@ -94,7 +94,7 @@ if st.button("➕ Add Result"):
     st.session_state.user_inputs.append(choice)
     st.success(f"Added: {choice}")
 
-# --- Continuous Learning from past ---
+# --- Continuous Learning from Past ---
 if len(st.session_state.user_inputs) > 8:
     for i in range(8, len(st.session_state.user_inputs)):
         past = st.session_state.user_inputs[i-8:i]
@@ -103,6 +103,11 @@ if len(st.session_state.user_inputs) > 8:
         if len(enc) == 8:
             st.session_state.X_train.append(enc)
             st.session_state.y_train.append(encode([next_val])[0])
+            # Trim training data
+            MAX_TRAIN = 3000
+            if len(st.session_state.X_train) > MAX_TRAIN:
+                st.session_state.X_train = st.session_state.X_train[-MAX_TRAIN:]
+                st.session_state.y_train = st.session_state.y_train[-MAX_TRAIN:]
 
 # --- Prediction Logic ---
 def predict_color(seq):
@@ -132,19 +137,24 @@ def learn(seq, actual):
         label = encode([actual])[0]
         st.session_state.X_train.append(encoded)
         st.session_state.y_train.append(label)
+
     for l in range(8, 4, -1):
         if len(seq) >= l:
             key = tuple(seq[-l:])
             st.session_state.transition_model[key][actual] += 1
 
+    if len(st.session_state.transition_model) > 10000:
+        st.session_state.transition_model.pop(next(iter(st.session_state.transition_model)))
+
 # --- Match Streak ---
 def match_streak_probability(seq):
-    streak_key = tuple(seq[-8:])
-    if streak_key in st.session_state.transition_model:
-        data = st.session_state.transition_model[streak_key]
-        total = sum(data.values())
-        probs = {k: round((v / total) * 100, 1) for k, v in data.items()}
-        return probs
+    for l in range(8, 4, -1):
+        streak_key = tuple(seq[-l:])
+        if streak_key in st.session_state.transition_model:
+            data = st.session_state.transition_model[streak_key]
+            total = sum(data.values())
+            probs = {k: round((v / total) * 100, 1) for k, v in data.items()}
+            return probs
     return {}
 
 # --- Prediction ---
@@ -158,9 +168,10 @@ if len(st.session_state.user_inputs) >= 10:
 
     streak_probs = match_streak_probability(st.session_state.user_inputs)
     if streak_probs:
-        st.info(f"🧬 Matched Past Pattern ➡️ Probabilities: {streak_probs}")
+        top = max(streak_probs, key=streak_probs.get)
+        st.info(f"🧬 Matched Past Pattern ➡️ Most Likely: {top} ({streak_probs[top]}%) | Full: {streak_probs}")
     else:
-        st.caption("🌀 No exact match found in learned patterns.")
+        st.caption("🌀 No good pattern found. Using model fallback.")
 
     if conf < 65:
         st.warning("⛔ Low confidence. Wait for better pattern.")
@@ -217,4 +228,4 @@ if st.session_state.prediction_log:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.markdown("---")
-st.caption("Built with ❤️ | Continuous Learning Enabled | Naive Bayes + Pattern + Streak Alert")
+st.caption("Built with ❤️ | Continuous Learning Enabled | Naive Bayes + Pattern Matching + Streaks")
