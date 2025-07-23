@@ -1,3 +1,4 @@
+
 # --- imports ---
 import streamlit as st
 import pandas as pd
@@ -87,7 +88,6 @@ if len(st.session_state.user_inputs) > 8:
         if len(enc) == 8:
             st.session_state.X_train.append(enc)
             st.session_state.y_train.append(encode([next_val])[0])
-            # Trim model size
             if len(st.session_state.X_train) > 3000:
                 st.session_state.X_train = st.session_state.X_train[-3000:]
                 st.session_state.y_train = st.session_state.y_train[-3000:]
@@ -125,24 +125,23 @@ def learn(seq, actual):
 
 # --- Prediction ---
 def predict_color(seq):
-    if len(seq) < 4:
+    if len(seq) < 10:
         return "Waiting", 0
 
-    # 1. Pattern Match
     pattern_probs = match_partial_pattern(seq)
     if pattern_probs:
         top = max(pattern_probs, key=pattern_probs.get)
         return top, pattern_probs[top]
 
-    # 2. Trend
-    if len(seq) >= 10:
-        top10, conf10 = recent_trend_prediction(seq)
+    top10, conf10 = recent_trend_prediction(seq)
+    if top10:
         return top10, conf10
 
-    # 3. Naive Bayes
     if len(st.session_state.X_train) >= 20:
         model = MultinomialNB()
         encoded = encode(seq[-8:])
+        if len(encoded) < 8:
+            encoded = [0] * (8 - len(encoded)) + encoded
         weights = np.exp(np.linspace(0, 1, len(st.session_state.X_train)))
         model.fit(st.session_state.X_train, st.session_state.y_train, sample_weight=weights)
         pred = model.predict([encoded])[0]
@@ -152,7 +151,7 @@ def predict_color(seq):
     return "Learning", 0
 
 # --- Prediction UI ---
-if len(st.session_state.user_inputs) >= 4:
+if len(st.session_state.user_inputs) >= 10:
     pred, conf = predict_color(st.session_state.user_inputs)
     st.subheader("📈 AI Prediction")
 
@@ -180,7 +179,6 @@ if len(st.session_state.user_inputs) >= 4:
             st.session_state.user_inputs.append(actual)
             st.session_state.loss_streak = 0 if correct else st.session_state.loss_streak + 1
 
-            # Save
             pickle.dump(
                 {"X_train": st.session_state.X_train, "y_train": st.session_state.y_train},
                 open(os.path.join(DATA_DIR, f"{st.session_state.username}_training.pkl"), "wb")
@@ -191,12 +189,12 @@ if len(st.session_state.user_inputs) >= 4:
             st.success("✅ Learned and updated.")
             st.rerun()
 else:
-    st.info("Enter at least 4 rounds to begin prediction.")
+    st.info("🔁 Enter at least 10 rounds to enable prediction.")
 
-# --- Stats and Download ---
 if st.session_state.y_train:
     counts = pd.Series([decode(y) for y in st.session_state.y_train]).value_counts().to_dict()
     st.caption(f"📊 Training Data Breakdown: {counts}")
+
 if st.session_state.prediction_log:
     st.subheader("📊 Prediction History")
     df = pd.DataFrame(st.session_state.prediction_log)
