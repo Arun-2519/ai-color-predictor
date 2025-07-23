@@ -1,47 +1,48 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import random
 from collections import defaultdict
 from io import BytesIO
-import random
-import numpy as np
-from sklearn.naive_bayes import MultinomialNB
 
-# --- Streamlit UI config ---
-st.set_page_config(page_title="🧠 AI Color Predictor", layout="centered")
+try:
+    from sklearn.naive_bayes import MultinomialNB
+except ModuleNotFoundError:
+    st.error("❌ 'scikit-learn' not found. Please install it in requirements.txt.")
+    st.stop()
+
+# --- Page Config ---
+st.set_page_config(page_title="🐉 Dragon Tiger Predictor AI", layout="centered")
+st.title("🐉 Dragon vs ⚖️ Tiger Predictor (AI-Powered)")
+
 st.markdown("""
     <style>
-        body { background-color: #0f1117; color: #ffffff; }
+        body { background-color: #0f1117; color: white; }
         .stButton>button {
-            background-color: #6a1b9a;
+            background-color: #9c27b0;
             color: white;
-            border-radius: 6px;
             font-weight: bold;
+            border-radius: 6px;
         }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🧠 AI Color Predictor with Bayesian & Pattern Learning")
+# --- Session State Init ---
+for key, default in {
+    "authenticated": False,
+    "username": "",
+    "inputs": [],
+    "X_train": [],
+    "y_train": [],
+    "log": [],
+    "loss_streak": 0,
+    "markov": defaultdict(lambda: defaultdict(int))
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-# --- Session Setup ---
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-if "username" not in st.session_state:
-    st.session_state.username = ""
-if "user_inputs" not in st.session_state:
-    st.session_state.user_inputs = []
-if "prediction_log" not in st.session_state:
-    st.session_state.prediction_log = []
-if "transition_model" not in st.session_state:
-    st.session_state.transition_model = defaultdict(lambda: defaultdict(int))
-if "loss_streak" not in st.session_state:
-    st.session_state.loss_streak = 0
-if "X_train" not in st.session_state:
-    st.session_state.X_train = []
-if "y_train" not in st.session_state:
-    st.session_state.y_train = []
-
-# --- Login System ---
-def login(user, pwd): return pwd == "1234"
+# --- Login Logic ---
+def login(u, p): return p == "1234"
 
 if not st.session_state.authenticated:
     st.subheader("🔐 Login")
@@ -53,7 +54,7 @@ if not st.session_state.authenticated:
             st.session_state.username = u
             st.success("✅ Logged in")
         else:
-            st.error("❌ Invalid login")
+            st.error("❌ Invalid credentials")
     st.stop()
 
 if st.button("Logout"):
@@ -61,111 +62,113 @@ if st.button("Logout"):
     st.session_state.username = ""
     st.rerun()
 
-# --- Add Input Interface ---
-st.subheader("🎮 Add Round Result (Red / Black / Joker)")
-choice = st.selectbox("Latest Result", ["Red", "Black", "Joker"])
-if st.button("➕ Add Result"):
-    st.session_state.user_inputs.append(choice)
-    st.success(f"Added: {choice}")
-
 # --- Encoding ---
-def encode_sequence(seq):
-    mapping = {"Red": 0, "Black": 1, "Joker": 2}
-    return [mapping[s] for s in seq if s in mapping]
+def encode(seq):
+    m = {'D': 0, 'T': 1, 'TIE': 2}
+    return [m[s] for s in seq if s in m]
 
-def decode_label(val):
-    rev_map = {0: "Red", 1: "Black", 2: "Joker"}
-    return rev_map.get(val, "")
+def decode(val):
+    m = {0: 'D', 1: 'T', 2: 'TIE'}
+    return m.get(val, "")
 
 # --- Prediction Logic ---
-def predict_color(sequence):
-    if len(sequence) < 8:
-        return adaptive_fallback(sequence)
+def predict(seq):
+    if len(seq) < 10:
+        return adaptive_fallback(seq)
 
-    seq = encode_sequence(sequence[-8:])
+    if len(st.session_state.X_train) < 20:
+        return adaptive_fallback(seq)
 
-    if len(st.session_state.X_train) >= 20:
-        clf = MultinomialNB()
-        weights = np.exp(np.linspace(0, 1, len(st.session_state.X_train)))
-        clf.fit(st.session_state.X_train, st.session_state.y_train, sample_weight=weights)
-        pred = clf.predict([seq])[0]
-        conf = max(clf.predict_proba([seq])[0]) * 100
-        return decode_label(pred), round(conf)
+    encoded = encode(seq[-10:])
+    clf = MultinomialNB()
+    weights = np.exp(np.linspace(0, 1, len(st.session_state.X_train)))
+    clf.fit(st.session_state.X_train, st.session_state.y_train, sample_weight=weights)
+    pred = clf.predict([encoded])[0]
+    conf = max(clf.predict_proba([encoded])[0]) * 100
+    return decode(pred), round(conf)
 
-    return adaptive_fallback(sequence)
+def adaptive_fallback(seq):
+    counts = {x: seq.count(x) for x in ['D', 'T', 'TIE']}
+    best = max(counts, key=counts.get)
+    return best, 60
 
-def adaptive_fallback(sequence):
-    reds = sequence[-10:].count("Red")
-    blacks = sequence[-10:].count("Black")
-    if reds > blacks:
-        return "Black", 70
-    elif blacks > reds:
-        return "Red", 70
-    else:
-        return random.choice(["Red", "Black"]), 60
+# --- Learning Logic ---
+def learn(seq, actual):
+    if len(seq) >= 10:
+        encoded_seq = encode(seq[-10:])
+        st.session_state.X_train.append(encoded_seq)
+        st.session_state.y_train.append(encode([actual])[0])
+    for l in range(10, 4, -1):
+        if len(seq) >= l:
+            key = tuple(seq[-l:])
+            st.session_state.markov[key][actual] += 1
 
-# --- Model Learning ---
-def update_learning(sequence, next_color):
-    if len(sequence) >= 8:
-        encoded = encode_sequence(sequence[-8:])
-        label = encode_sequence([next_color])[0]
-        st.session_state.X_train.append(encoded)
-        st.session_state.y_train.append(label)
-    for length in range(8, 4, -1):
-        if len(sequence) >= length:
-            key = tuple(sequence[-length:])
-            st.session_state.transition_model[key][next_color] += 1
+# --- Input UI ---
+st.subheader("🎮 Add Result (D / T / TIE)")
+choice = st.selectbox("Latest Result", ["D", "T", "TIE"])
+if st.button("➕ Add Result"):
+    st.session_state.inputs.append(choice)
+    st.success(f"Added: {choice}")
+
+# --- Continuous Learning from History ---
+if len(st.session_state.inputs) > 10:
+    for i in range(10, len(st.session_state.inputs)):
+        hist = st.session_state.inputs[i-10:i]
+        label = st.session_state.inputs[i]
+        encoded = encode(hist)
+        if len(encoded) == 10:
+            st.session_state.X_train.append(encoded)
+            st.session_state.y_train.append(encode([label])[0])
 
 # --- Prediction Section ---
-if len(st.session_state.user_inputs) >= 10:
-    prediction, conf = predict_color(st.session_state.user_inputs)
+if len(st.session_state.inputs) >= 10:
+    pred, conf = predict(st.session_state.inputs)
 
     st.subheader("📈 AI Prediction")
-
     if st.session_state.loss_streak >= 3:
-        st.warning("⚠️ More than 3 incorrect predictions in a row. Please proceed with caution.")
+        st.warning("⚠️ 3+ incorrect predictions in a row. Be cautious!")
         st.audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg", autoplay=True)
 
-    st.success(f"Predicted: **{prediction}** | Confidence: `{conf}%`")
+    st.success(f"Predicted: **{pred}** | Confidence: `{conf}%`")
     if conf >= 85:
         st.audio("https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg", autoplay=True)
     else:
         st.audio("https://actions.google.com/sounds/v1/alarms/warning.ogg", autoplay=True)
 
-    actual = st.selectbox("Enter actual result:", ["Red", "Black", "Joker"], key="actual_feedback")
+    actual = st.selectbox("Enter Actual Result", ["D", "T", "TIE"], key="actual_feedback")
     if st.button("✅ Confirm & Learn"):
-        correct = (actual == prediction)
-        st.session_state.prediction_log.append({
-            "Prediction": prediction,
+        correct = actual == pred
+        st.session_state.log.append({
+            "Prediction": pred,
             "Confidence": conf,
             "Actual": actual,
             "Correct": "✅" if correct else "❌"
         })
-        update_learning(st.session_state.user_inputs, actual)
-        st.session_state.user_inputs.append(actual)
-
-        if correct:
-            st.session_state.loss_streak = 0
-        else:
-            st.session_state.loss_streak += 1
-
-        st.success("Learned and updated model.")
+        learn(st.session_state.inputs, actual)
+        st.session_state.inputs.append(actual)
+        st.session_state.loss_streak = 0 if correct else st.session_state.loss_streak + 1
+        st.success("Learned and model updated.")
         st.rerun()
 else:
-    st.warning(f"Need {10 - len(st.session_state.user_inputs)} more entries to start prediction.")
+    st.info(f"Enter {10 - len(st.session_state.inputs)} more rounds to enable prediction.")
 
-# --- History & Export Section ---
-if st.session_state.prediction_log:
+# --- Training Info ---
+if st.session_state.y_train:
+    label_counts = pd.Series([decode(y) for y in st.session_state.y_train]).value_counts().to_dict()
+    st.caption(f"📊 Training Summary: {label_counts}")
+
+# --- History + Export ---
+if st.session_state.log:
     st.subheader("📊 Prediction History")
-    df = pd.DataFrame(st.session_state.prediction_log)
+    df = pd.DataFrame(st.session_state.log)
     st.dataframe(df, use_container_width=True)
 
-    if st.button("📥 Generate Excel"):
-        buffer = BytesIO()
-        df.to_excel(buffer, index=False)
-        st.download_button("⬇️ Download Excel", buffer, file_name=f"{st.session_state.username}_AI_history.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    if st.button("📥 Export to Excel"):
+        buf = BytesIO()
+        df.to_excel(buf, index=False)
+        st.download_button("⬇️ Download Excel", data=buf.getvalue(),
+                           file_name=f"{st.session_state.username}_dragon_tiger_history.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.markdown("---")
-st.caption("Built with ❤️ | Naive Bayes + Markov Pattern + Time Weighted | TensorFlow-Free Edition")
+st.caption("🔍 Powered by Naive Bayes, Markov Patterns, and Time-Weighted Learning | Built with ❤️ by Vendra")
